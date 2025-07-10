@@ -408,3 +408,225 @@ docker-compose build
 ```
 
 Этот FAQ содержит всю необходимую информацию для создания и понимания проекта Notes API. Используйте его как справочник при разработке! 
+
+
+1. Serializers.py - детальный разбор
+
+# Импортируем базовый класс для создания сериализаторов
+from rest_framework import serializers
+
+# Импортируем нашу модель Note из текущего приложения
+from .models import Note
+
+# Создаём класс сериализатора, который наследуется от ModelSerializer
+class NoteSerializer(serializers.ModelSerializer):
+    # Кастомизируем поле user - вместо ID показываем username
+    # ReadOnlyField означает, что это поле нельзя изменить через API
+    # source='user.username' говорит: "возьми объект user, затем его поле username"
+    user = serializers.ReadOnlyField(source='user.username')
+
+    # Вложенный класс Meta содержит настройки сериализатора
+    class Meta:
+        # Указываем, какую модель использовать для автоматического создания полей
+        model = Note
+        
+        # Список полей, которые будут включены в JSON ответ
+        # Порядок полей определяет порядок в JSON
+        fields = ['id', 'title', 'content', 'created_at', 'updated_at', 'user']
+        
+        # Поля, которые нельзя изменять через API (только для чтения)
+        # Эти поля будут проигнорированы при POST, PUT, PATCH запросах
+        read_only_fields = ['created_at', 'updated_at']
+
+
+2. Views.py - детальный разбор
+# Импортируем готовые классы для создания API views
+# generics содержит базовые классы для типичных операций (List, Create, Retrieve, Update, Delete)
+# permissions содержит классы для проверки прав доступа
+from rest_framework import generics, permissions
+
+# Импортируем нашу модель Note из текущего приложения
+from .models import Note
+
+# Импортируем наш сериализатор из того же приложения
+from .serializers import NoteSerializer
+
+# Создаём класс для обработки GET (список) и POST (создание) запросов
+# ListCreateAPIView автоматически создаёт два эндпоинта:
+# - GET /api/notes/ - получить список заметок
+# - POST /api/notes/ - создать новую заметку
+class NoteListCreate(generics.ListCreateAPIView):
+    # Указываем, какой сериализатор использовать для преобразования данных
+    # DRF автоматически использует его для валидации и сериализации
+    serializer_class = NoteSerializer
+    
+    # Список классов для проверки прав доступа
+    # IsAuthenticated означает, что пользователь должен быть авторизован
+    # Если не авторизован, DRF вернёт 401 Unauthorized
+    permission_classes = [permissions.IsAuthenticated]
+
+    # Метод, который DRF вызывает для получения списка объектов
+    # self.request.user - текущий авторизованный пользователь
+    def get_queryset(self):
+        # Возвращаем только заметки текущего пользователя
+        # Это обеспечивает безопасность - пользователь видит только свои данные
+        # filter() создаёт QuerySet с условием WHERE user = текущий_пользователь
+        return Note.objects.filter(user=self.request.user)
+
+    # Метод, который DRF вызывает при создании нового объекта
+    # serializer - уже валидированный сериализатор с данными
+    def perform_create(self, serializer):
+        # Сохраняем объект, автоматически устанавливая владельца
+        # user=self.request.user передаётся в метод save() сериализатора
+        # Это гарантирует, что заметка будет привязана к текущему пользователю
+        serializer.save(user=self.request.user)
+
+# Создаём класс для обработки GET, PUT, PATCH, DELETE запросов к одной заметке
+# RetrieveUpdateDestroyAPIView автоматически создаёт четыре эндпоинта:
+# - GET /api/notes/1/ - получить заметку с id=1
+# - PUT /api/notes/1/ - полностью заменить заметку
+# - PATCH /api/notes/1/ - частично обновить заметку
+# - DELETE /api/notes/1/ - удалить заметку
+class NoteDetailView(generics.RetrieveUpdateDestroyAPIView):
+    # Указываем, какой сериализатор использовать
+    serializer_class = NoteSerializer
+    
+    # Список классов для проверки прав доступа
+    permission_classes = [permissions.IsAuthenticated]
+
+    # Метод, который DRF вызывает для получения объекта
+    # Используется для всех операций (GET, PUT, PATCH, DELETE)
+    def get_queryset(self):
+        # Возвращаем только заметки текущего пользователя
+        # Это обеспечивает безопасность - пользователь может работать только со своими заметками
+        # Если попытаться получить заметку другого пользователя, получим 404 Not Found
+        return Note.objects.filter(user=self.request.user)
+
+3. URLs.py - детальный разбор
+# Импортируем функцию path для создания URL маршрутов
+# path() принимает строку URL и view функцию/класс
+from django.urls import path
+
+# Импортируем наши view классы из текущего приложения
+# NoteListCreate - для списка и создания заметок
+# NoteDetailView - для работы с одной заметкой
+from .views import NoteListCreate, NoteDetailView
+
+# Список URL маршрутов для этого приложения
+# Django будет искать совпадения в этом списке
+urlpatterns = [
+    # Маршрут для списка и создания заметок
+    # '' - пустой путь (корень /api/notes/)
+    # NoteListCreate.as_view() - преобразует класс в view функцию
+    # Django автоматически вызывает as_view() для создания функции-обработчика
+    # name='note-list-create' - имя для обратных ссылок (reverse URL lookup)
+    path('', NoteListCreate.as_view(), name='note-list-create'),
+    
+    # Маршрут для работы с одной заметкой
+    # '<int:pk>/' - путь с параметром (например, /api/notes/1/)
+    # <int:pk> - целое число, которое будет передано в view как параметр pk
+    # int: - конвертер типа (гарантирует, что pk будет целым числом)
+    # pk - имя параметра (primary key - первичный ключ)
+    # NoteDetailView.as_view() - преобразует класс в view функцию
+    # name='note-detail' - имя для обратных ссылок
+    path('<int:pk>/', NoteDetailView.as_view(), name='note-detail'),
+]
+
+4. Главный URLs.py - детальный разбор
+# Импортируем админку Django
+from django.contrib import admin
+
+# Импортируем функции для работы с URL
+# path - для создания маршрутов
+# include - для включения URL из других приложений
+from django.urls import path, include
+
+# Список URL маршрутов для всего проекта
+# Django ищет совпадения в этом списке по порядку
+urlpatterns = [
+    # Маршрут для админки Django
+    # 'admin/' - префикс URL (админка будет доступна по /admin/)
+    # admin.site.urls - встроенные URL админки Django
+    # Когда пользователь переходит на /admin/, Django показывает админку
+    path('admin/', admin.site.urls),
+    
+    # Маршрут для нашего API заметок
+    # 'api/notes/' - префикс URL (API будет доступно по /api/notes/)
+    # include('notes.urls') - включает все URL из приложения notes
+    # Когда пользователь переходит на /api/notes/, Django ищет совпадения в notes.urls
+    # Полный путь будет: /api/notes/ + пути из notes.urls
+    # Например: /api/notes/ + '' = /api/notes/
+    # Например: /api/notes/ + '1/' = /api/notes/1/
+    path('api/notes/', include('notes.urls')),
+]
+
+5. Models.py - детальный разбор
+# Импортируем базовый класс для создания моделей Django
+from django.db import models
+
+# Импортируем встроенную модель User Django
+# User содержит поля: username, email, password, first_name, last_name и др.
+from django.contrib.auth.models import User
+
+# Создаём класс модели, который наследуется от models.Model
+# models.Model предоставляет базовую функциональность для работы с базой данных
+class Note(models.Model):
+    # Поле для заголовка заметки
+    # CharField - поле для короткого текста
+    # max_length=255 - максимальная длина 255 символов
+    # Это поле будет обязательным (null=False, blank=False по умолчанию)
+    title = models.CharField(max_length=255)
+    
+    # Поле для содержимого заметки
+    # TextField - поле для длинного текста без ограничения длины
+    # Это поле будет обязательным
+    content = models.TextField()
+    
+    # Поле для даты создания заметки
+    # DateTimeField - поле для даты и времени
+    # auto_now_add=True - автоматически устанавливает текущее время при создании объекта
+    # Это поле нельзя изменить после создания
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    # Поле для даты последнего обновления заметки
+    # DateTimeField - поле для даты и времени
+    # auto_now=True - автоматически обновляет время при каждом сохранении объекта
+    # Это поле обновляется при каждом изменении заметки
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    # Поле для связи с пользователем (владелец заметки)
+    # ForeignKey - поле для связи "один-ко-многим"
+    # User - модель, с которой связываем (один пользователь может иметь много заметок)
+    # on_delete=models.CASCADE - при удалении пользователя удаляются все его заметки
+    # Это поле будет обязательным
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+
+
+6. Admin.py - детальный разбор
+# Импортируем админку Django
+from django.contrib import admin
+
+# Импортируем нашу модель Note из текущего приложения
+from .models import Note
+
+# Регистрируем модель Note в админке Django
+# admin.site.register() - функция для регистрации модели
+# Note - модель, которую регистрируем
+# После регистрации модель появится в веб-интерфейсе админки
+# Администраторы смогут создавать, редактировать, удалять заметки через веб-интерфейс
+admin.site.register(Note)
+
+
+
+Последовательность выполнения запроса:
+Пример: GET /api/notes/1/
+Django получает запрос → ищет совпадение в главном urls.py
+Находит path('api/notes/', include('notes.urls')) → переходит к notes.urls
+В notes.urls находит path('<int:pk>/', NoteDetailView.as_view()) → pk=1
+Создаёт экземпляр NoteDetailView → вызывает as_view()
+Проверяет права → permissions.IsAuthenticated
+Вызывает get_queryset() → Note.objects.filter(user=request.user)
+Ищет заметку → queryset.get(pk=1)
+Создаёт сериализатор → NoteSerializer(note)
+Преобразует в JSON → serializer.data
+Возвращает ответ → HTTP 200 с JSON
